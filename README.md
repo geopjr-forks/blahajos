@@ -1,3 +1,9 @@
+# blahajOS
+
+An incomplete Alpine Linux desktop experience with GNOME (& KDE (future)) based on crunchpine.
+
+Run `crystal run gen_mkimg.cr` to create the scripts.
+
 ## to build
 
 ```

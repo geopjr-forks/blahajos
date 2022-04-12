@@ -1,0 +1,105 @@
+#!/bin/sh -e
+
+HOSTNAME="$1"
+if [ -z "$HOSTNAME" ]; then
+	echo "usage: $0 hostname"
+	exit 1
+fi
+
+cleanup() {
+	rm -rf "$tmp"
+}
+
+makefile() {
+	OWNER="$1"
+	PERMS="$2"
+	FILENAME="$3"
+	cat > "$FILENAME"
+	chown "$OWNER" "$FILENAME"
+	chmod "$PERMS" "$FILENAME"
+}
+
+rc_add() {
+	mkdir -p "$tmp"/etc/runlevels/"$2"
+	ln -sf /etc/init.d/"$1" "$tmp"/etc/runlevels/"$2"/"$1"
+}
+
+tmp="$(mktemp -d)"
+trap cleanup EXIT
+
+mkdir -p "$tmp"/etc
+makefile root:root 0644 "$tmp"/etc/hostname <<EOF
+$HOSTNAME
+EOF
+
+mkdir -p "$tmp"/etc/network
+makefile root:root 0644 "$tmp"/etc/network/interfaces <<EOF
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+EOF
+
+mkdir -p "$tmp"/etc/apk
+makefile root:root 0644 "$tmp"/etc/apk/world <<EOF
+alpine-base
+<%= @apks %>
+EOF
+
+
+mkdir -p "$tmp"/etc/init.d
+makefile root:root 0755 "$tmp"/etc/init.d/crunchpine-user-setup <<EOF
+#!/sbin/openrc-run
+depend(){}
+start(){
+	setup-udev
+	echo -e "<%= @pass %>\n<%= @pass %>\n" | adduser -g "<%= @user %>" <%= @user %>
+	adduser <%= @user %> wheel
+	echo "permit persist :wheel" >> /etc/doas.d/doas.conf
+	sed -i 's/\[daemon\]/\[daemon\]\nAutomaticLogin=<%= @user %>\nAutomaticLoginEnable=True/g' /etc/gdm/custom.conf
+	sed -i 's/\[Autologin\]/\[Autologin\]\User=<%= @user %>\Session=plasma/g' /etc/sddm.conf.d/autologin.conf
+	modprobe snd_seq #
+	echo snd_seq >> /etc/modules #
+	sed -i '1 s/.*/Welcome to <%= @name %> <%= @version %>/' /etc/issue
+	echo "Welcome to Blahaj!" > /etc/motd
+	echo '<%= @os_release %>' > /etc/os-release
+	#flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+	#gsettings set org.gnome.desktop.background picture-uri "file:///usr/share/backgrounds/trans.svg"
+	#qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "var allDesktops = desktops();print (allDesktops);for (i=0;i<allDesktops.length;i++) {d = allDesktops[i];d.wallpaperPlugin = 'org.kde.image';d.currentConfigGroup = Array('Wallpaper', 'org.kde.image', 'General');d.writeConfig('Image', 'file:///usr/share/backgrounds/trans.svg')}"
+	rc-update del crunchpine-user-setup
+	rm /etc/init.d/crunchpine-user-setup
+}
+stop(){}
+EOF
+rc_add crunchpine-user-setup sysinit
+
+rc_add devfs sysinit
+rc_add dmesg sysinit
+rc_add mdev sysinit
+rc_add hwdrivers sysinit
+rc_add modloop sysinit
+
+rc_add hwclock boot
+rc_add modules boot
+rc_add sysctl boot
+rc_add hostname boot
+rc_add bootmisc boot
+rc_add syslog boot
+
+rc_add mount-ro shutdown
+rc_add killprocs shutdown
+rc_add savecache shutdown
+
+<%= @services %>
+
+makefile root:root 0644 "$tmp"/etc/apk/repositories <<EOF
+https://dl-cdn.alpinelinux.org/alpine/<%= @version %>/main
+https://dl-cdn.alpinelinux.org/alpine/<%= @version %>/community
+EOF
+
+# RECHECK
+MAGICDIR=/home/build/aports/scripts/mnt
+cp -r "$MAGICDIR"/conf/* "$tmp"/
+
+tar -c -C "$tmp" etc | gzip -9n > $HOSTNAME.apkovl.tar.gz
